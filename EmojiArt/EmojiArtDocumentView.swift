@@ -9,7 +9,9 @@ import SwiftUI
 
 struct EmojiArtDocumentView: View {
     @ObservedObject var document: EmojiArtDocument
-    let defaultEmojiFontSize: CGFloat = 40
+    @Environment(\.undoManager) var undoManager
+    
+    @ScaledMetric var defaultEmojiFontSize: CGFloat = 40
     var body: some View {
         VStack(spacing: 0) {
             documentBody
@@ -28,11 +30,11 @@ struct EmojiArtDocumentView: View {
         GeometryReader {
             geometry in
                 ZStack {
-                    Color.white.overlay(
-                        OptionalImage(uiImage: document.backgroundImage)
-                            .scaleEffect(zoomScale)
-                            .position(convertFromEmojiCoordinates((0,0), in: geometry))
-                    )
+                    Color.white
+                    OptionalImage(uiImage: document.backgroundImage)
+                        .scaleEffect(zoomScale)
+                        .position(convertFromEmojiCoordinates((0,0), in: geometry))
+                    
                         .gesture(doubleTapToZoom(in: geometry.size))
                     if document.backgroundImageFetchStatus == .fetching {
                         ProgressView().scaleEffect(2)
@@ -65,19 +67,86 @@ struct EmojiArtDocumentView: View {
                     }
                 }
                 .onReceive(document.$backgroundImage) {image in
-                    zoomToFit(image, in: geometry.size)
+                    if autozoom {
+                        zoomToFit(image, in: geometry.size)
+                    }
+                }
+                .compactableToolbar {
+                    AnimatedActionButton(title: "Paste Background", systemImage: "doc.on.clipboard") {
+                        pasteBackground()
+                    }
+                    if Camera.isAvailable {
+                        AnimatedActionButton(title: "Take Photo", systemImage: "camera") {
+                            backgroundPicker = .camera
+                        }
+                    }
+                    if PhotoLibrary.isAvailable {
+                        AnimatedActionButton(title: "Search Photo", systemImage: "photo") {
+                            backgroundPicker = .library
+                        }
+                    }
+                    if let undoManager = undoManager {
+                        if undoManager.canUndo {
+                            AnimatedActionButton(title: undoManager.undoActionName, systemImage: "arrow.uturn.backward") {
+                                undoManager.undo()
+                            }
+                        }
+                        
+                        if undoManager.canRedo {
+                            AnimatedActionButton(title: undoManager.undoActionName, systemImage: "arrow.uturn.forward") {
+                                undoManager.undo()
+                            }
+                        }
+                    }
+                }
+                .sheet(item: $backgroundPicker) {pickerType in
+                    switch pickerType {
+                        case .camera: Camera(handlePickedImage: {image in handlePickedBackgroundImage(image) })
+                    case .library: PhotoLibrary(handlePickedImage: { image in handlePickedBackgroundImage(image)})
+                    }
                 }
         }
     }
     
+    private func handlePickedBackgroundImage(_ image: UIImage?) {
+        autozoom = true
+        if let imageData = image?.jpegData(compressionQuality: 1.0) {
+            document.setBackground(.imageData(imageData), undoManager: undoManager)
+        }
+        backgroundPicker = nil
+    }
+    
+    @State private var backgroundPicker: BackgroundPickerType?
+    
+    enum BackgroundPickerType: Identifiable {
+        case camera
+        case library
+        
+        var id: BackgroundPickerType {self}
+    }
+    
+    private func pasteBackground() {
+        autozoom = true
+        if let imageData = UIPasteboard.general.image?.jpegData(compressionQuality: 1.0) {
+            document.setBackground(.imageData(imageData), undoManager: undoManager)
+        } else if let url = UIPasteboard.general.url?.imageURL {
+            document.setBackground(.url(url), undoManager: undoManager)
+        } else {
+            alertToShow = IdentifiableAlert(title: "Paste Background", message: "There is no image currently on the pasteboard")
+        }
+    }
+    
+    @State private var autozoom = false
+    
     private func drop(providers: [NSItemProvider], at location: CGPoint, in geometry: GeometryProxy) -> Bool {
         var found = providers.loadObjects(ofType: URL.self) {url in
-            document.setBackground(EmojiArtModel.Background.url(url.imageURL))
+            autozoom = true
+            document.setBackground(EmojiArtModel.Background.url(url.imageURL), undoManager: undoManager)
         }
         if !found {
             found = providers.loadObjects(ofType: UIImage.self) {image in
                 if let data = image.jpegData(compressionQuality: 1.0) {
-                    document.setBackground(.imageData(data))
+                    document.setBackground(.imageData(data), undoManager: undoManager)
                 }
             }
         }
@@ -86,21 +155,22 @@ struct EmojiArtDocumentView: View {
                 if let emoji = string.first, emoji.isEmoji {
                     document.addEmoji(String(emoji),
                                       at: converToEmojiCoordinates(location, in: geometry),
-                                      size: defaultEmojiFontSize / zoomScale)
+                                      size: defaultEmojiFontSize / zoomScale,
+                                      undoManager: undoManager)
                 }
             }
         }
         return found
     }
     
-    @State private var steadyStatePanOffset: CGSize = CGSize.zero
+    @SceneStorage("EmojiArtDocumentView.steadyStatePanOffset") private var steadyStatePanOffset: CGSize = CGSize.zero
     @GestureState private var gesturePanOffset: CGSize = CGSize.zero
     
     private var panOffset: CGSize {
         (steadyStatePanOffset + gesturePanOffset) * zoomScale
     }
     
-    @State private var steadyStateZoomScale: CGFloat = 1
+    @SceneStorage("EmojiArtDocumentView.steadyStateZoomScale") private var steadyStateZoomScale: CGFloat = 1
     @GestureState private var gestureZoomScale: CGFloat = 1
     
     private var zoomScale: CGFloat {

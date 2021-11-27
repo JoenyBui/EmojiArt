@@ -13,7 +13,7 @@ struct PaletteChooser: View {
     
     @EnvironmentObject var store: PaletteStore
     
-    @State private var chosenPaletteIndex = 0
+    @SceneStorage("PaletteChooser.chosenPaletteIndex") private var chosenPaletteIndex = 0
     @State private var paletteToEdit:Palette?
     @State private var managing = false
     
@@ -82,6 +82,7 @@ struct PaletteChooser: View {
         .transition(rollTransition)
         .popover(item: $paletteToEdit) {palette in
             PaletteEditor(palette: $store.palettes[palette])
+                .wrappedInNavigationViewToMakeDismissable { paletteToEdit = nil }
         }
         .sheet(isPresented: $managing) {
             PaletteManager()
